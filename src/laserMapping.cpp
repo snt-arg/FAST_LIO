@@ -85,9 +85,11 @@ mutex mtx_buffer;
 condition_variable sig_buffer;
 
 string root_dir = ROOT_DIR;
-string map_file_path, lid_topic, imu_topic;
+string map_file_path, lid_topic, imu_topic, odom_topic, odom_frame, base_frame;
+
 
 double res_mean_last = 0.05, total_residual = 0.0;
+rclcpp::Time lidar_end_time_ros;
 double last_timestamp_lidar = 0, last_timestamp_imu = -1.0;
 double gyr_cov = 0.1, acc_cov = 0.1, b_gyr_cov = 0.0001, b_acc_cov = 0.0001;
 double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
@@ -105,6 +107,7 @@ vector<PointVector>  Nearest_Points;
 vector<double>       extrinT(3, 0.0);
 vector<double>       extrinR(9, 0.0);
 deque<double>                     time_buffer;
+deque<rclcpp::Time> ros_time_buffer;
 deque<PointCloudXYZI::Ptr>        lidar_buffer;
 deque<sensor_msgs::msg::Imu::ConstSharedPtr> imu_buffer;
 
@@ -300,6 +303,7 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::UniquePtr msg)
     p_pre->process(msg, ptr);
     lidar_buffer.push_back(ptr);
     time_buffer.push_back(cur_time);
+    ros_time_buffer.push_back(msg->header.stamp);
     last_timestamp_lidar = cur_time;
     s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
     mtx_buffer.unlock();
@@ -394,16 +398,19 @@ bool sync_packages(MeasureGroup &meas)
         if (meas.lidar->points.size() <= 1) // time too little
         {
             lidar_end_time = meas.lidar_beg_time + lidar_mean_scantime;
+            lidar_end_time_ros = ros_time_buffer.front();
             std::cerr << "Too few input point cloud!\n";
         }
         else if (meas.lidar->points.back().curvature / double(1000) < 0.5 * lidar_mean_scantime)
         {
             lidar_end_time = meas.lidar_beg_time + lidar_mean_scantime;
+            lidar_end_time_ros = ros_time_buffer.front();
         }
         else
         {
             scan_num ++;
             lidar_end_time = meas.lidar_beg_time + meas.lidar->points.back().curvature / double(1000);
+            lidar_end_time_ros = ros_time_buffer.front();
             lidar_mean_scantime += (meas.lidar->points.back().curvature / double(1000) - lidar_mean_scantime) / scan_num;
         }
 
@@ -430,6 +437,7 @@ bool sync_packages(MeasureGroup &meas)
 
     lidar_buffer.pop_front();
     time_buffer.pop_front();
+    ros_time_buffer.pop_front();
     lidar_pushed = false;
     return true;
 }
@@ -504,8 +512,9 @@ void publish_frame_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Share
         sensor_msgs::msg::PointCloud2 laserCloudmsg;
         pcl::toROSMsg(*laserCloudWorld, laserCloudmsg);
         // laserCloudmsg.header.stamp = ros::Time().fromSec(lidar_end_time);
-        laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
-        laserCloudmsg.header.frame_id = "odom";
+        //laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
+        laserCloudmsg.header.stamp = lidar_end_time_ros;
+        laserCloudmsg.header.frame_id = odom_frame;
         pubLaserCloudFull->publish(laserCloudmsg);
         publish_count -= PUBFRAME_PERIOD;
     }
@@ -556,8 +565,9 @@ void publish_frame_body(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Shared
 
     sensor_msgs::msg::PointCloud2 laserCloudmsg;
     pcl::toROSMsg(*laserCloudIMUBody, laserCloudmsg);
-    laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
-    laserCloudmsg.header.frame_id = "base_link";
+    //laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
+    laserCloudmsg.header.stamp = lidar_end_time_ros;
+    laserCloudmsg.header.frame_id = base_frame;
     pubLaserCloudFull_body->publish(laserCloudmsg);
     publish_count -= PUBFRAME_PERIOD;
 }
@@ -573,8 +583,9 @@ void publish_effect_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Shar
     }
     sensor_msgs::msg::PointCloud2 laserCloudFullRes3;
     pcl::toROSMsg(*laserCloudWorld, laserCloudFullRes3);
-    laserCloudFullRes3.header.stamp = get_ros_time(lidar_end_time);
-    laserCloudFullRes3.header.frame_id = "odom";
+    //laserCloudFullRes3.header.stamp = get_ros_time(lidar_end_time);
+    laserCloudFullRes3.header.stamp = lidar_end_time_ros;
+    laserCloudFullRes3.header.frame_id = odom_frame;
     pubLaserCloudEffect->publish(laserCloudFullRes3);
 }
 
@@ -596,7 +607,7 @@ void publish_map(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub
     pcl::toROSMsg(*pcl_wait_pub, laserCloudmsg);
     // laserCloudmsg.header.stamp = ros::Time().fromSec(lidar_end_time);
     laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
-    laserCloudmsg.header.frame_id = "odom";
+    laserCloudmsg.header.frame_id = odom_frame;
     pubLaserCloudMap->publish(laserCloudmsg);
 
     // sensor_msgs::msg::PointCloud2 laserCloudMap;
@@ -627,9 +638,10 @@ void set_posestamp(T & out)
 
 void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped, std::unique_ptr<tf2_ros::TransformBroadcaster> & tf_br)
 {
-    odomAftMapped.header.frame_id = "odom";
-    odomAftMapped.child_frame_id = "base_link";
-    odomAftMapped.header.stamp = get_ros_time(lidar_end_time);
+    odomAftMapped.header.frame_id = odom_frame;
+    odomAftMapped.child_frame_id = base_frame;
+    //odomAftMapped.header.stamp = get_ros_time(lidar_end_time);
+    odomAftMapped.header.stamp = lidar_end_time_ros;
     set_posestamp(odomAftMapped.pose);
     pubOdomAftMapped->publish(odomAftMapped);
     auto P = kf.get_P();
@@ -645,8 +657,8 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
     }
 
     geometry_msgs::msg::TransformStamped trans;
-    trans.header.frame_id = "odom";
-    trans.child_frame_id = "base_link";
+    trans.header.frame_id = odom_frame;
+    trans.child_frame_id = base_frame;
     trans.header.stamp = get_ros_time(lidar_end_time);
     trans.transform.translation.x = odomAftMapped.pose.pose.position.x;
     trans.transform.translation.y = odomAftMapped.pose.pose.position.y;
@@ -662,7 +674,7 @@ void publish_path(rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath)
 {
     set_posestamp(msg_body_pose);
     msg_body_pose.header.stamp = get_ros_time(lidar_end_time); // ros::Time().fromSec(lidar_end_time);
-    msg_body_pose.header.frame_id = "odom";
+    msg_body_pose.header.frame_id = odom_frame;
 
     /*** if path is too large, the rvis will crash ***/
     static int jjj = 0;
@@ -806,8 +818,11 @@ public:
         this->declare_parameter<bool>("publish.scan_bodyframe_pub_en", true);
         this->declare_parameter<int>("max_iteration", 4);
         this->declare_parameter<string>("map_file_path", "");
-        this->declare_parameter<string>("common.lid_topic", "/livox/lidar");
-        this->declare_parameter<string>("common.imu_topic", "/livox/imu");
+        this->declare_parameter<string>("common.lid_topic", "/ouster/points");
+        this->declare_parameter<string>("common.imu_topic", "/ouster/imu");
+        this->declare_parameter<string>("common.odom_topic", "/odom");
+        this->declare_parameter<string>("common.odom_frame", "odom");
+        this->declare_parameter<string>("common.base_frame", "base_link");
         this->declare_parameter<bool>("common.time_sync_en", false);
         this->declare_parameter<double>("common.time_offset_lidar_to_imu", 0.0);
         this->declare_parameter<double>("filter_size_corner", 0.5);
@@ -842,8 +857,11 @@ public:
         this->get_parameter_or<bool>("publish.scan_bodyframe_pub_en", scan_body_pub_en, true);
         this->get_parameter_or<int>("max_iteration", NUM_MAX_ITERATIONS, 4);
         this->get_parameter_or<string>("map_file_path", map_file_path, "");
-        this->get_parameter_or<string>("common.lid_topic", lid_topic, "/livox/lidar");
-        this->get_parameter_or<string>("common.imu_topic", imu_topic,"/livox/imu");
+        this->get_parameter_or<string>("common.lid_topic", lid_topic, "/ouster/points");
+        this->get_parameter_or<string>("common.imu_topic", imu_topic,"/ouster/imu");
+        this->get_parameter_or<string>("common.odom_topic", odom_topic, "/odom");
+        this->get_parameter_or<string>("common.odom_frame", odom_frame, "odom");
+        this->get_parameter_or<string>("common.base_frame", base_frame, "base_link");
         this->get_parameter_or<bool>("common.time_sync_en", time_sync_en, false);
         this->get_parameter_or<double>("common.time_offset_lidar_to_imu", time_diff_lidar_to_imu, 0.0);
         this->get_parameter_or<double>("filter_size_corner",filter_size_corner_min,0.5);
@@ -873,7 +891,7 @@ public:
         RCLCPP_INFO(this->get_logger(), "p_pre->lidar_type %d", p_pre->lidar_type);
 
         path.header.stamp = this->get_clock()->now();
-        path.header.frame_id ="odom";
+        path.header.frame_id = odom_frame;
 
         // /*** variables definition ***/
         // int effect_feat_num = 0, frame_num = 0;
@@ -928,10 +946,10 @@ public:
         }
         sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(imu_topic, 10, imu_cbk);
         pubLaserCloudFull_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 20);
-        pubLaserCloudFull_body_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_body", 20);
+        pubLaserCloudFull_body_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud/undistorted", 20);
         pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
         pubLaserCloudMap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", 20);
-        pubOdomAftMapped_ = this->create_publisher<nav_msgs::msg::Odometry>("/platform/odometry", 20);
+        pubOdomAftMapped_ = this->create_publisher<nav_msgs::msg::Odometry>(odom_topic, 20);
         pubPath_ = this->create_publisher<nav_msgs::msg::Path>("/path", 20);
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
