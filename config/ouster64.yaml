@@ -1,10 +1,9 @@
 common:
     lid_topic:  "/ouster/points"
     imu_topic:  "/ouster/imu"
-    odom_topic: "/platform/odometry"
+    odom_topic: "/odom"
 
-    imu_frame: os_imu
-    base_frame: base_link
+    base_frame: os_imu
     odom_frame: odom
 
     time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
