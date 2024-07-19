@@ -768,7 +768,7 @@ int main(int argc, char** argv)
     nh.param<string>("map_file_path",map_file_path,"");
     nh.param<string>("common/lid_topic",lid_topic,"/livox/lidar");
     nh.param<string>("common/imu_topic", imu_topic,"/livox/imu");
-    nh.param<string>("common/odom_topic", imu_topic,"/odom");
+    nh.param<string>("common/odom_topic", odom_topic,"/odom");
 
     nh.param<string>("common/imu_frame", imu_frame, "os_imu");
     nh.param<string>("common/base_frame", base_frame, "base_link");
@@ -862,7 +862,7 @@ int main(int argc, char** argv)
     ros::Publisher pubLaserCloudMap = nh.advertise<sensor_msgs::PointCloud2>
             ("/Laser_map", 100000);
     ros::Publisher pubOdomAftMapped = nh.advertise<nav_msgs::Odometry> 
-            ("/odom", 100000);
+            (odom_topic, 100000);
     ros::Publisher pubPath          = nh.advertise<nav_msgs::Path> 
             ("/path", 100000);
 //------------------------------------------------------------------------------------------------------

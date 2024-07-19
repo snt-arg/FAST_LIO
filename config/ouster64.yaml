@@ -1,7 +1,7 @@
 common:
     lid_topic:  "/ouster/points"
     imu_topic:  "/ouster/imu"
-    odom_topic: "platform/odometry"
+    odom_topic: "/platform/odometry"
 
     imu_frame: os_imu
     base_frame: base_link
